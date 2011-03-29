@@ -201,6 +201,16 @@ var server = http.createServer(function(req, res)
 			if(z < config.maps[map].minz || z > config.maps[map].maxz)
 				res.endError(404, 'z out of range');
 			
+			// check that the x & y is inside the range
+			var w = Math.pow(2, z)-1;
+			if(x > w || x < 0)
+				res.endError(404, 'x out of range');
+			
+			if(y > w || y < 0)
+				res.endError(404, 'y out of range');
+			
+			console.log(z, x, y, w);
+			
 			// switch by action field
 			switch(path[6] || '')
 			{
