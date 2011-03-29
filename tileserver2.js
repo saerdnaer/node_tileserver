@@ -30,6 +30,8 @@ var url = require('url');
 var fs = require('fs');
 var path = require('path');
 var dgram = require('dgram');
+var mime = require('mime');
+var util = require('util');
 
 // size in bytes of metatile header
 var metatile_header_size = 20 + 8 * 64;
@@ -61,6 +63,8 @@ var stats =
 	// statistics about the different maps
 	maps: {}
 }
+
+var tirex_req_id = 0;
 
 // basic configuration
 var config = 
@@ -97,9 +101,11 @@ http.ServerResponse.prototype.endJson = function(data)
 // end with and server error
 http.ServerResponse.prototype.endError = function(code, desc, headers)
 {
-	headers = headers || [];
-	headers['Content-Type'] = headers['Content-Type'] || 'text/plain';
 	desc = desc || '';
+	
+	headers = headers || {};
+	headers['Content-Type'] = headers['Content-Type'] || 'text/plain';
+	headers['X-Error'] = desc
 	
 	this.writeHead(code, headers);
 	this.end(desc);
@@ -121,11 +127,14 @@ http.ServerResponse.prototype.endTile = function(buffer, map, z, x, y)
 }
 
 // log an request to the console
-http.IncomingMessage.prototype.log = function(usage)
+http.IncomingMessage.prototype.log = function(usage, comment)
 {
 	// numeric resonses should be enhanced with status strings
 	if(typeof usage == 'number')
 		usage = usage + ' ' + http.STATUS_CODES[usage];
+	
+	if(comment)
+		usage += ' ('+comment+')';
 	
 	// print the message
 	console.log('%s %s -> %s', this.method, this.url, usage);
@@ -147,8 +156,8 @@ var server = http.createServer(function(req, res)
 	// only GET requests are acceptable
 	if(req.method != 'GET')
 	{
-		req.log(405);
-		return res.endError(405, 'only get requests are handled');
+		res.endError(405, 'only GET requests are handled');
+		return req.log(405, 'only GET requests are handled');
 	}
 	
 	// analyze the path
@@ -157,22 +166,22 @@ var server = http.createServer(function(req, res)
 	// the first part of the url decides what route we'll take
 	switch(path[1] || '')
 	{
-		// GET / -> list the maps
-		case '':
+		// GET /maps -> list the maps
+		case 'maps':
 		{
 			var names = [];
 			for(name in config.maps)
 				names.push(name);
 			
-			req.log('maps');
-			return res.endJson(names);
+			res.endJson(names);
+			return req.log('maps');
 		}
 		
 		// GET /stats -> get statistics
 		case 'stats':
 		{
-			req.log('stats');
-			return res.endJson(stats);
+			res.endJson(stats);
+			return req.log('stats');
 		}
 		
 		// GET /tiles... -> sth with tiles
@@ -183,8 +192,8 @@ var server = http.createServer(function(req, res)
 			//      1    2  3 4 5
 			if(path.length < 6)
 			{
-				req.log(404);
-				return res.endError(404, 'wrong tile path');
+				res.endError(404, 'wrong tile path');
+				return req.log(404, 'wrong tile path');
 			}
 			
 			// split call
@@ -195,21 +204,31 @@ var server = http.createServer(function(req, res)
 			
 			// check if the map-name is known
 			if(!config.maps[map])
+			{
 				res.endError(404, 'unknown map');
+				return req.log(404, 'unknown map');
+			}
 			
 			// check that the zoom is inside the renderer-range
 			if(z < config.maps[map].minz || z > config.maps[map].maxz)
+			{
 				res.endError(404, 'z out of range');
+				return req.log(404, 'z out of range');
+			}
 			
 			// check that the x & y is inside the range
 			var w = Math.pow(2, z)-1;
 			if(x > w || x < 0)
+			{
 				res.endError(404, 'x out of range');
+				return req.log(404, 'x out of range');
+			}
 			
 			if(y > w || y < 0)
+			{
 				res.endError(404, 'y out of range');
-			
-			console.log(z, x, y, w);
+				return req.log(404, 'y out of range');
+			}
 			
 			// switch by action field
 			switch(path[6] || '')
@@ -271,7 +290,7 @@ var server = http.createServer(function(req, res)
 									res.endError(500, 'render error');
 									
 									// print the request to the log
-									return req.log(500);
+									return req.log(500, 'render error');
 								}
 								
 								// tile rendered, re-read it from disk
@@ -284,7 +303,7 @@ var server = http.createServer(function(req, res)
 										res.endError(500, 'render error');
 										
 										// print the request to the log
-										return req.log(500);
+										return req.log(500, 'render error');
 									}
 									
 									// tile rendered, send it to client
@@ -317,7 +336,7 @@ var server = http.createServer(function(req, res)
 					res.endError(400, 'unknown action');
 					
 					// print the request to the log
-					return req.log(400);
+					return req.log(400, 'unknown action');
 			}
 		}
 		
@@ -497,14 +516,21 @@ function parseConfig(str)
 
 
 // try to serve the file from disc
-function handleStatic(req, res, cb) {
+function handleStatic(req, res, cb)
+{
+	// parse url
+	var pathname = url.parse(req.url).pathname;
+	
+	// directory index
+	if(pathname == '/')
+		pathname = '/index.html';
 	
 	// check for directory traversal attacks
-	if(req.url.substr(0, 2) == '/.')
+	if(pathname.indexOf('/.') != -1)
 		cb(false);
 	
 	// url to file path mapping
-	var file = './'+req.url;
+	var file = 'res'+pathname;
 	
 	// check if the file exists on disk
 	fs.stat(file, function(err, stats) {
@@ -555,7 +581,7 @@ function sendToTirex(map, z, x, y, cb)
 	var my = y - y%8;
 	
 	// the request-id
-	var reqid = 'nodets-' + stats.tiles_requested;
+	var reqid = 'nodets-' + process.pid + '-' + (tirex_req_id++);
 	
 	// store the callback under this id
 	if(cb) pending_requests[reqid] = cb;
