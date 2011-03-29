@@ -71,8 +71,8 @@ var config =
 	// port to listen on using http
 	http_port: 5000, 
 	
-	// master host (ip is fster than hostname)
-	master_host: '127.0.0.1', 
+	// master socket
+	master_socket: '/var/run/tirex/master.sock', 
 	
 	// tirex enqueue priority
 	prio: 10, 
@@ -342,31 +342,7 @@ server.on('clientError', function(exception)
 
 
 // create an udp4-socket to chat with the master server
-var master = dgram.createSocket('unix_dgram', function(buf, rinfo)
-{
-	// deserialize the message from tirex
-	var msg = deserialize_tirex_msg(buf.toString('ascii', 0, rinfo.size));
-	
-	console.log('tirex<<< ', msg);
-	
-	// check this request has an id
-	if(!msg.id)
-		return;
-	
-	// if a request is pending for this id
-	if(pending_requests[msg.id])
-	{
-		// fetch it from the list of ending requests
-		cb = pending_requests[msg.id];
-		
-		// delete the stored request
-		delete pending_requests[msg.id];
-		console.log('now %d pending requests', count(pending_requests));
-		
-		// and call it with the result of the request
-		cb(msg.result == 'ok');
-	}
-});
+var master = dgram.createSocket('unix_dgram');
 
 // read the tirex-config
 console.log('reading config from %s', config.configdir);
@@ -394,11 +370,6 @@ for(k in config.maps)
 	// print that we know about it
 	console.log('   %s (%s) [%d-%d]: %s', map.name, map.renderer.name, map.minz, map.maxz, map.tiledir);
 };
-
-// start the web-server
-console.log('');
-console.log('listening on http://0.0.0.0:%d/', config.http_port);
-server.listen(config.http_port);
 
 // parse the config
 //  all fs-ops are synchronous for simplicity, 
@@ -565,7 +536,6 @@ function handleStatic(req, res, cb) {
 	});
 }
 
-
 // send to tirex and call back when the tile got rendered
 //  if(cb) cb(success)
 function sendToTirex(map, z, x, y, cb)
@@ -592,13 +562,38 @@ function sendToTirex(map, z, x, y, cb)
 		z:    z
 	};
 	
-	console.log('tirex(%s:%s)>>> ', config.master_host, config.maps[map].renderer.port, msg);
+	console.log('tirex>>> ', msg);
 	
 	// send it to tirex
 	var buf = new Buffer(serialize_tirex_msg(msg));
-	//master.send(buf, 0, buf.length, config.maps[map].renderer.port, config.master_host);
-	master.send(buf, 0, buf.length, '/var/run/tirex/master.sock');
+	master.send(buf, 0, buf.length, config.master_socket);
 }
+
+master.on('message', function(buf, rinfo)
+{
+	// deserialize the message from tirex
+	var msg = deserialize_tirex_msg(buf.toString('ascii', 0, rinfo.size));
+	
+	console.log('tirex<<< ', msg);
+	
+	// check this request has an id
+	if(!msg.id)
+		return;
+	
+	// if a request is pending for this id
+	if(pending_requests[msg.id])
+	{
+		// fetch it from the list of ending requests
+		cb = pending_requests[msg.id];
+		
+		// delete the stored request
+		delete pending_requests[msg.id];
+		console.log('now %d pending requests', count(pending_requests));
+		
+		// and call it with the result of the request
+		cb(msg.result == 'ok');
+	}
+});
 
 // fetch the tile status
 //  if(cb) cb(status)
@@ -734,3 +729,15 @@ function deserialize_tirex_msg(string)
 	
 	return msg;
 }
+
+
+// connect to the master
+console.log('');
+console.log('opening dgram socket to master');
+master.bind('');
+master.on('listening', function()
+{
+	// start the web-server
+	console.log('listening on http://0.0.0.0:%d/', config.http_port);
+	server.listen(config.http_port);
+});
