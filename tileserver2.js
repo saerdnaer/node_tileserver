@@ -36,8 +36,11 @@ var util = require('util');
 // size in bytes of metatile header
 var metatile_header_size = 20 + 8 * 64;
 
-// open http connections waiting for answer
+// open http connections waiting for answer from tirex
 var pending_requests = {};
+
+// incremental counter used to generate unique tirex request ids
+var tirex_req_id = 0;
 
 // statistics
 var stats = 
@@ -45,26 +48,68 @@ var stats =
 	// when the server was started
 	started: new Date(), 
 	
-	// number of tiles requestet in total
-	tiles_requested: 0, 
+	// number of recieved requests
+	recieved_requests: 0, 
 	
-	// number of tiles served from cache
-	tiles_from_cache: 0, 
+	// number of currently pending requests
+	pending_requests: 0, 
 	
-	// number of tiles sent to tirex
-	tiles_rendered: 0, 
+	// number of delivered static files
+	static_delivered: 0, 
 	
-	// number of served static files
-	static_handled: 0, 
-	
-	// number of incoming http requests
-	http_requests: 0, 
+	// number of delivered meta information
+	meta_delivered: 0, 
 	
 	// statistics about the different maps
-	maps: {}
+	maps: {}, 
+	
+	/*
+	maps[<mapname>] = {
+		zooms[<zoomlevel>] = {
+			// number of tiles delivered
+			tiles_delivered: 0, 
+			
+			// number of tiles sent to tirex
+			tiles_rendered: 0, 
+			
+			// number of tiles that hit the timeout before returning from tirex
+			tiles_rendered_timeouted: 0
+		}
+	}
+	*/
+	
+	// the following numbers get interpolated:
+	
+	interpolate: function()
+	{
+		this.tiles_delivered = 0;
+		this.tiles_rendered = 0;
+		this.tiles_rendered_timeouted = 0;
+		
+		for(mapname in this.maps)
+		{
+			var map = this.maps[mapname];
+			map.tiles_delivered = 0;
+			map.tiles_rendered = 0;
+			map.tiles_rendered_timeouted = 0;
+			
+			for(zoomlevel in map.zooms)
+			{
+				var zoom = map.zooms[zoomlevel];
+				
+				map.tiles_delivered += zoom.tiles_delivered;
+				map.tiles_rendered += zoom.tiles_rendered;
+				map.tiles_rendered_timeouted += zoom.tiles_rendered_timeouted;
+			}
+			
+			this.tiles_delivered += map.tiles_delivered;
+			this.tiles_rendered += map.tiles_rendered;
+			this.tiles_rendered_timeouted += map.tiles_rendered_timeouted;
+		}
+		
+		return this;
+	}
 }
-
-var tirex_req_id = 0;
 
 // basic configuration
 var config = 
@@ -140,18 +185,11 @@ http.IncomingMessage.prototype.log = function(usage, comment)
 	console.log('%s %s -> %s', this.method, this.url, usage);
 }
 
-function count(o)
-{
-	var i = 0;
-	for(k in o) i++;
-	return i;
-}
-
 // the http server
 var server = http.createServer(function(req, res)
 {
 	// count the request
-	stats.http_requests++;
+	stats.recieved_requests++;
 	
 	// only GET requests are acceptable
 	if(req.method != 'GET')
@@ -173,6 +211,9 @@ var server = http.createServer(function(req, res)
 			for(name in config.maps)
 				names.push(name);
 			
+			// count a meta-request
+			stats.meta_delivered++;
+			
 			res.endJson(names);
 			return req.log('maps');
 		}
@@ -180,7 +221,10 @@ var server = http.createServer(function(req, res)
 		// GET /stats -> get statistics
 		case 'stats':
 		{
-			res.endJson(stats);
+			// count a meta-request
+			stats.meta_delivered++;
+			
+			res.endJson(stats.interpolate());
 			return req.log('stats');
 		}
 		
@@ -236,6 +280,9 @@ var server = http.createServer(function(req, res)
 				// dirty
 				case 'dirty':
 					
+					// count a render-request
+					stats.maps[map].zooms[z].tiles_rendered++;
+					
 					// send the request to tirex, don't call back when finished
 					sendToTirex(map, z, x, y);
 					
@@ -249,6 +296,9 @@ var server = http.createServer(function(req, res)
 				
 				// status
 				case 'status':
+					
+					// count a meta-request
+					stats.meta_delivered++;
 					
 					// fetch the status of the log, call back when finished
 					fetchTileStatus(map, z, x, y, function(status)
@@ -265,19 +315,14 @@ var server = http.createServer(function(req, res)
 				// fetch tile
 				case '':
 					
-					// count the request
-					stats.tiles_requested++;
-					stats.maps[map].tiles_requested++;
-					
 					// try to fetch the tile
 					return fetchTile(map, z, x, y, function(buffer)
 					{
 						// no tile found
 						if(!buffer)
 						{
-							// count the request
-							stats.tiles_rendered++;
-							stats.maps[map].tiles_rendered++;
+							// count a render-request
+							stats.maps[map].zooms[z].tiles_rendered++;
 							
 							// send the request to tirex
 							//  TODO: add timeout
@@ -306,6 +351,9 @@ var server = http.createServer(function(req, res)
 										return req.log(500, 'render error');
 									}
 									
+									// count a delivery-request
+									stats.maps[map].zooms[z].tiles_delivered++;
+									
 									// tile rendered, send it to client
 									res.endTile(buffer, map, z, x, y);
 									
@@ -316,9 +364,8 @@ var server = http.createServer(function(req, res)
 							
 						}
 						
-						// count the request
-						stats.tiles_from_cache++;
-						stats.maps[map].tiles_from_cache++;
+						// count a delivery-request
+						stats.maps[map].zooms[z].tiles_delivered++;
 						
 						// tile found, send it to client
 						res.endTile(buffer, map, z, x, y);
@@ -349,8 +396,8 @@ var server = http.createServer(function(req, res)
 				// the file was found
 				if(handled)
 				{
-					// count the request
-					stats.static_handled++;
+					// count a delivery-request
+					stats.static_delivered++;
 					
 					return req.log('static');
 				}
@@ -384,17 +431,22 @@ for(k in config.maps)
 	var map = config.maps[k];
 	
 	// create stats array for map
-	stats.maps[map.name] = 
+	stats.maps[map.name] = {zooms: {}};
+	
+	// create stats array for the zoom levels
+	for(z = map.minz; z <= map.maxz; z++)
 	{
-		// number of tiles requestet for this map
-		tiles_requested: 0, 
-		
-		// number of tiles served from cache for this map
-		tiles_from_cache: 0, 
-		
-		// number of tiles sent to tirex for this map
-		tiles_rendered: 0
-	};
+		stats.maps[map.name].zooms[z] = {
+			// number of tiles delivered
+			tiles_delivered: 0, 
+			
+			// number of tiles sent to tirex
+			tiles_rendered: 0, 
+			
+			// number of tiles that hit the timeout before returning from tirex
+			tiles_rendered_timeouted: 0
+		}
+	}
 	
 	// print that we know about it
 	console.log('   %s (%s) [%d-%d]: %s', map.name, map.renderer.name, map.minz, map.maxz, map.tiledir);
@@ -584,7 +636,11 @@ function sendToTirex(map, z, x, y, cb)
 	var reqid = 'nodets-' + process.pid + '-' + (tirex_req_id++);
 	
 	// store the callback under this id
-	if(cb) pending_requests[reqid] = cb;
+	if(cb)
+	{
+		pending_requests[reqid] = cb;
+		stats.pending_requests++;
+	}
 	
 	//TODO: add a timeout that clears this request when tirex won't answer in time
 	
@@ -624,7 +680,7 @@ master.on('message', function(buf, rinfo)
 		
 		// delete the stored request
 		delete pending_requests[msg.id];
-		console.log('now %d pending requests', count(pending_requests));
+		stats.pending_requests--;
 		
 		// and call it with the result of the request
 		cb(msg.result == 'ok');
