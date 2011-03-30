@@ -25,6 +25,14 @@
 
 ===================================================================== */
 
+/*
+ TODO
+   - status-call
+   - missing documentation
+   - cache header (static & tiles)
+   - etag header (tiles)
+*/
+
 var http = require('http');
 var url = require('url');
 var fs = require('fs');
@@ -414,7 +422,7 @@ var server = http.createServer(function(req, res)
 				}
 				
 				// the file was not found
-				req.log(404);
+				req.log(404, 'file not found');
 				return res.endError(404, 'file not found');
 			});
 		}
@@ -663,7 +671,7 @@ function sendToTirex(map, z, x, y, cb)
 		z:    z
 	};
 	
-	console.log('tirex>>> ', msg);
+	console.log('tirex>>> ', msg.id);
 	
 	// send it to tirex
 	var buf = new Buffer(serialize_tirex_msg(msg));
@@ -690,7 +698,7 @@ master.on('message', function(buf, rinfo)
 	// deserialize the message from tirex
 	var msg = deserialize_tirex_msg(buf.toString('ascii', 0, rinfo.size));
 	
-	console.log('tirex<<< ', msg);
+	console.log('tirex<<< ', msg.id);
 	
 	// check this request has an id
 	if(!msg.id)
