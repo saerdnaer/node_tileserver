@@ -22,7 +22,7 @@
 			var map;
 			
 			// initiator
-			function init()
+			function initmap(layers)
 			{
 				// show an error image for missing tiles
 				OpenLayers.Util.onImageLoadError = function()
@@ -51,10 +51,7 @@
 					projection: new OpenLayers.Projection("EPSG:900913"), 
 					displayProjection: new OpenLayers.Projection("EPSG:4326"), 
 					
-					layers: [
-						new OpenLayers.Layer.OSM.Local("test", {numZoomLevels: 11}), 
-						new OpenLayers.Layer.OSM.Local("example", {numZoomLevels: 5})
-					]
+					layers: layers
 				});
 				
 				// default zoom & position
@@ -122,6 +119,30 @@
 				
 				CLASS_NAME: "OpenLayers.Layer.OSM.Local"
 			});
+			
+			function init()
+			{
+				OpenLayers.Request.GET(
+				{
+					url: 'maps', 
+					callback: function(r)
+					{
+						var json = new OpenLayers.Format.JSON();
+						var maps = json.read(r.responseText);
+						var layers = [];
+						
+						for(map in maps)
+						{
+							layers.push(
+								new OpenLayers.Layer.OSM.Local(map, {numZoomLevels: maps[map].maxz - maps[map].minz})
+							);
+						};
+						
+						console.log(maps);
+						initmap(layers);
+					}
+				});
+			}
 		</script> 
 	</head> 
 	 

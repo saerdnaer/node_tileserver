@@ -207,14 +207,22 @@ var server = http.createServer(function(req, res)
 		// GET /maps -> list the maps
 		case 'maps':
 		{
-			var names = [];
+			var maps = {};
 			for(name in config.maps)
-				names.push(name);
+			{
+				maps[name] = {
+					// minimal zoom
+					minz: config.maps[name].minz, 
+					
+					// maximal zoom
+					maxz: config.maps[name].maxz
+				}
+			}
 			
 			// count a meta-request
 			stats.meta_delivered++;
 			
-			res.endJson(names);
+			res.endJson(maps);
 			return req.log('maps');
 		}
 		
