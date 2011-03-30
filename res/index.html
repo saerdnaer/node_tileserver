@@ -134,7 +134,7 @@
 						for(map in maps)
 						{
 							layers.push(
-								new OpenLayers.Layer.OSM.Local(map, {numZoomLevels: maps[map].maxz - maps[map].minz})
+								new OpenLayers.Layer.OSM.Local(map, {numZoomLevels: maps[map].maxz - maps[map].minz + 1})
 							);
 						};
 						
