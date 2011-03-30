@@ -126,6 +126,9 @@ var config =
 	// tirex enqueue priority
 	prio: 10, 
 	
+	// timeout in milisecods (seconds × 1000) for render-requests, before the browser get's a 404
+	timeout: 5000, 
+	
 	// this will be filled from the tirex config
 	maps: {}
 }
@@ -650,8 +653,6 @@ function sendToTirex(map, z, x, y, cb)
 		stats.pending_requests++;
 	}
 	
-	//TODO: add a timeout that clears this request when tirex won't answer in time
-	
 	var msg = {
 		id:   reqid, 
 		type: 'metatile_enqueue_request',
@@ -667,6 +668,21 @@ function sendToTirex(map, z, x, y, cb)
 	// send it to tirex
 	var buf = new Buffer(serialize_tirex_msg(msg));
 	master.send(buf, 0, buf.length, config.master_socket);
+	
+	// set the timeout to cancel the request
+	setTimeout(function()
+	{
+		// if the request is already answered, don't bug around
+		if(!pending_requests[msg.id])
+			return;
+		
+		// delete the pending request
+		delete pending_requests[msg.id];
+		stats.pending_requests--;
+		
+		// call back with negative result
+		cb(false);
+	}, config.timeout);
 }
 
 master.on('message', function(buf, rinfo)
