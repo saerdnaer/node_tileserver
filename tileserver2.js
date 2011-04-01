@@ -28,10 +28,65 @@
 /*
  TODO
    - status-call
-   - cache header (static & tiles)
-   - etag header (tiles)
+   - cache header (static)
+   - check etag header (tiles)
    - ip-limits (tiles)
+   - dirty check & dirty timeout
 */
+
+// basic configuration
+var config = 
+{
+	// directory to read the rirex config from
+	configdir: '/etc/tirex',
+	
+	// port to listen on using http
+	http_port: 5000, 
+	
+	// master socket
+	master_socket: '/var/run/tirex/master.sock', 
+	
+	// tirex enqueue priority
+	prio: 2, 
+	
+	// timeout in milisecods (seconds × 1000) for render-requests, before the browser get's a 404
+	timeout: 5000, 
+	
+	// specify different cache times for different zoom levels
+	cache: [
+		{
+			//minz: 0, 
+			maxz: 5, 
+			
+			// 28 days
+			seconds: 2419200
+		}, 
+		{
+			minz: 6, 
+			maxz: 9, 
+			
+			// 7 days
+			seconds: 604800
+		}, 
+		{
+			minz: 10, 
+			maxz: 13, 
+			
+			// 1 day
+			seconds: 86400
+		}, 
+		{
+			minz: 14, 
+			//maxz: 999, 
+			
+			// 9 hours
+			seconds: 32400
+		}
+	], 
+	
+	// this will be filled from the tirex config
+	maps: {}
+}
 
 var http = require('http');
 var url = require('url');
@@ -40,6 +95,7 @@ var path = require('path');
 var dgram = require('dgram');
 var mime = require('mime');
 var util = require('util');
+var crypto = require('crypto');
 
 // size in bytes of metatile header
 var metatile_header_size = 20 + 8 * 64;
@@ -175,28 +231,6 @@ var stats =
 	}
 }
 
-// basic configuration
-var config = 
-{
-	// directory to read the rirex config from
-	configdir: '/etc/tirex',
-	
-	// port to listen on using http
-	http_port: 5000, 
-	
-	// master socket
-	master_socket: '/var/run/tirex/master.sock', 
-	
-	// tirex enqueue priority
-	prio: 10, 
-	
-	// timeout in milisecods (seconds × 1000) for render-requests, before the browser get's a 404
-	timeout: 5000, 
-	
-	// this will be filled from the tirex config
-	maps: {}
-}
-
 // get long value at offset from buffer
 Buffer.prototype.getLong = function(offset)
 {
@@ -224,18 +258,52 @@ http.ServerResponse.prototype.endError = function(code, desc, headers)
 }
 
 // end with a tile
-http.ServerResponse.prototype.endTile = function(buffer, map, z, x, y)
+http.ServerResponse.prototype.endTile = function(png, meta, map, z, x, y)
 {
-	// TODO: add meta info & cache header
+	// iterate over all cache settings
+	for(var i=0; i<config.cache.length; i++)
+	{
+		// one cache setting
+		var cache = config.cache[i];
+		
+		// check if we're inside the min/max range
+		if(cache.minz && cache.minz > z)
+			continue;
+		
+		if(cache.maxz && cache.maxz < z)
+			continue;
+		
+		// yep, we are, use this cache config
+		break;
+	}
+	
+	var now = new Date();
+	var expires = new Date(now.getTime() + cache.seconds*1000);
+	
+	var etag = meta.mtime.toGMTString();
+	//var etag = (new Buffer(meta.mtime.toGMTString())).toString('base64');
+	
+	//var md5 = crypto.createHash('md5');
+	//md5.update(meta.mtime.toGMTString());
+	//var etag = md5.digest('hex');
+	
 	this.writeHead(200, {
+		
+		'Server': 'tileserver2.js on nodejs (http://svn.toolserver.org/svnroot/mazder/node-tileserver/)', 
 		'Content-Type': 'image/png', 
-		'Content-Length': buffer.length, 
+		'Content-Length': png.length, 
+		
+		'Date': now.toGMTString(), 
+		'Expires': expires.toGMTString(), 
+		'ETag': '"'+etag+'"', 
+		'Cache-Control': 'max-age='+cache.seconds, 
+		
 		'X-Map': map, 
 		'X-Coord': z+'/'+x+'/'+y, 
 		'X-License': 'Map data (c) OpenStreetMap contributors, CC-BY-SA'
 	});
 	
-	this.end(buffer);
+	this.end(png);
 }
 
 // log an request to the console
@@ -391,10 +459,10 @@ var server = http.createServer(function(req, res)
 				case '':
 					
 					// try to fetch the tile
-					return fetchTile(map, z, x, y, function(buffer)
+					return fetchTile(map, z, x, y, function(png, meta)
 					{
 						// no tile found
-						if(!buffer)
+						if(!png)
 						{
 							// count a render-request
 							stats.maps[map].zooms[z].tiles_rendered++;
@@ -413,10 +481,10 @@ var server = http.createServer(function(req, res)
 								}
 								
 								// tile rendered, re-read it from disk
-								return fetchTile(map, z, x, y, function(buffer)
+								return fetchTile(map, z, x, y, function(png, meta)
 								{
 									// if the rendering did not complete
-									if(!buffer)
+									if(!png)
 									{
 										// send an server error
 										res.endError(500, 'render error');
@@ -429,7 +497,7 @@ var server = http.createServer(function(req, res)
 									stats.maps[map].zooms[z].tiles_delivered++;
 									
 									// tile rendered, send it to client
-									res.endTile(buffer, map, z, x, y);
+									res.endTile(png, meta, map, z, x, y);
 									
 									// print the request to the log
 									return req.log('tile from tirex');
@@ -442,7 +510,7 @@ var server = http.createServer(function(req, res)
 						stats.maps[map].zooms[z].tiles_delivered++;
 						
 						// tile found, send it to client
-						res.endTile(buffer, map, z, x, y);
+						res.endTile(png, meta, map, z, x, y);
 						
 						// print the request to the log
 						return req.log('tile from cache');
@@ -791,47 +859,34 @@ function fetchTile(map, z, x, y, cb)
 		return;
 	}
 	
-	// try to open the file
-	fs.open(metafile, 'r', null, function(err, fd) {
-		// error opening the fille, call back without result
+	// fetch stats from the metafile
+	return fs.stat(metafile, function(err, meta) 
+	{
+		// error fetching stats
 		if(err)
 		{
 			if(cb) cb();
 			return;
 		}
 		
-		// create a buffer fo the metatile header
-		var buffer = new Buffer(metatile_header_size);
-		
-		// try to read the metatile header from disk
-		fs.read(fd, buffer, 0, metatile_header_size, 0, function(err, bytesRead)
+		// try to open the file
+		return fs.open(metafile, 'r', null, function(err, fd)
 		{
-			// the metatile header could not be read, call back without result
-			if (err || bytesRead !== metatile_header_size)
+			// error opening the file, call back without result
+			if(err)
 			{
-				// close file descriptor
-				fs.close(fs);
-				
-				// call back without result
 				if(cb) cb();
 				return;
 			}
 			
-			// offset into lookup table in header
-			var pib = 20 + ((y%8) * 8) + ((x%8) * 64);
+			// create a buffer fo the metatile header
+			var buffer = new Buffer(metatile_header_size);
 			
-			// read file offset and size of the real tile from the header
-			var offset = buffer.getLong(pib);
-			var size   = buffer.getLong(pib+4);
-			
-			// create a buffer for the png data
-			var png = new Buffer(size);
-			
-			// read the png from disk
-			fs.read(fd, png, 0, size, offset, function(err, bytesRead)
+			// try to read the metatile header from disk
+			return fs.read(fd, buffer, 0, metatile_header_size, 0, function(err, bytesRead)
 			{
-				// the png could not be read
-				if (err || bytesRead !== size)
+				// the metatile header could not be read, call back without result
+				if (err || bytesRead !== metatile_header_size)
 				{
 					// close file descriptor
 					fs.close(fs);
@@ -841,12 +896,37 @@ function fetchTile(map, z, x, y, cb)
 					return;
 				}
 				
-				// close file descriptor
-				fs.close(fd);
+				// offset into lookup table in header
+				var pib = 20 + ((y%8) * 8) + ((x%8) * 64);
 				
-				// call back with png
-				if(cb) cb(png);
-				return;
+				// read file offset and size of the real tile from the header
+				var offset = buffer.getLong(pib);
+				var size   = buffer.getLong(pib+4);
+				
+				// create a buffer for the png data
+				var png = new Buffer(size);
+				
+				// read the png from disk
+				return fs.read(fd, png, 0, size, offset, function(err, bytesRead)
+				{
+					// the png could not be read
+					if (err || bytesRead !== size)
+					{
+						// close file descriptor
+						fs.close(fs);
+						
+						// call back without result
+						if(cb) cb();
+						return;
+					}
+					
+					// close file descriptor
+					fs.close(fd);
+					
+					// call back with png
+					if(cb) cb(png, meta);
+					return;
+				});
 			});
 		});
 	});
