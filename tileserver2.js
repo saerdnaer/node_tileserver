@@ -28,8 +28,6 @@
 /*
  TODO
    - status-call
-   - cache header (static)
-   - check etag header (tiles)
    - ip-limits (tiles)
    - dirty check & dirty timeout
 */
@@ -84,6 +82,9 @@ var config =
 		}
 	], 
 	
+	// cache time for static files (28 days)
+	cacheStatic: 2419200, 
+	
 	// this will be filled from the tirex config
 	maps: {}
 }
@@ -96,6 +97,9 @@ var dgram = require('dgram');
 var mime = require('mime');
 var util = require('util');
 var crypto = require('crypto');
+
+// string to identify the server via http
+var serverString = 'tileserver2.js using nodejs (http://svn.toolserver.org/svnroot/mazder/node-tileserver/)';
 
 // size in bytes of metatile header
 var metatile_header_size = 20 + 8 * 64;
@@ -282,7 +286,7 @@ http.ServerResponse.prototype.endTile = function(png, map, z, x, y)
 	
 	this.writeHead(200, {
 		
-		'Server': 'tileserver2.js on nodejs (http://svn.toolserver.org/svnroot/mazder/node-tileserver/)', 
+		'Server': serverString, 
 		'Content-Type': 'image/png', 
 		'Content-Length': png.length, 
 		
@@ -710,12 +714,17 @@ function handleStatic(req, res, cb)
 				extension = path.extname(file), 
 				mimetype = mime.lookup(extension);
 			
+			var now = new Date();
+			var expires = new Date(now.getTime() + config.cacheStatic*1000);
+			
 			// write header line
 			res.writeHead(200, {
+				'Server': serverString, 
 				'Content-Type': mimetype, 
-				
-				// 2419200 = 4 Weeks × 7 Days × 24 Hours × 60 Minutes × 60 Seconds
-				'Cache-Control': 'max-age=2419200, must-revalidate'
+		
+				'Date': now.toGMTString(), 
+				'Expires': expires.toGMTString(), 
+				'Cache-Control': 'max-age='+config.cacheStatic, 
 			});
 			
 			// the file was found and the request method is ok, go on and serve the file's content
@@ -996,3 +1005,4 @@ master.on('listening', function()
 	// start the web-server
 	server.listen(config.http_port);
 });
+
