@@ -96,7 +96,6 @@ var path = require('path');
 var dgram = require('dgram');
 var mime = require('mime');
 var util = require('util');
-var crypto = require('crypto');
 
 // string to identify the server via http
 var serverString = 'tileserver2.js using nodejs (http://svn.toolserver.org/svnroot/mazder/node-tileserver/)';
@@ -555,8 +554,7 @@ server.on('clientError', function(exception)
 	console.log("exception:", exception);
 });
 
-
-// create an udp4-socket to chat with the master server
+// create an unix-socket to talk with the master
 var master = dgram.createSocket('unix_dgram');
 
 // read the tirex-config
