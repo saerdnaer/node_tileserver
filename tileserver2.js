@@ -258,7 +258,7 @@ http.ServerResponse.prototype.endError = function(code, desc, headers)
 }
 
 // end with a tile
-http.ServerResponse.prototype.endTile = function(png, meta, map, z, x, y)
+http.ServerResponse.prototype.endTile = function(png, map, z, x, y)
 {
 	// iterate over all cache settings
 	for(var i=0; i<config.cache.length; i++)
@@ -280,13 +280,6 @@ http.ServerResponse.prototype.endTile = function(png, meta, map, z, x, y)
 	var now = new Date();
 	var expires = new Date(now.getTime() + cache.seconds*1000);
 	
-	var etag = meta.mtime.toGMTString();
-	//var etag = (new Buffer(meta.mtime.toGMTString())).toString('base64');
-	
-	//var md5 = crypto.createHash('md5');
-	//md5.update(meta.mtime.toGMTString());
-	//var etag = md5.digest('hex');
-	
 	this.writeHead(200, {
 		
 		'Server': 'tileserver2.js on nodejs (http://svn.toolserver.org/svnroot/mazder/node-tileserver/)', 
@@ -295,7 +288,6 @@ http.ServerResponse.prototype.endTile = function(png, meta, map, z, x, y)
 		
 		'Date': now.toGMTString(), 
 		'Expires': expires.toGMTString(), 
-		'ETag': '"'+etag+'"', 
 		'Cache-Control': 'max-age='+cache.seconds, 
 		
 		'X-Map': map, 
@@ -459,7 +451,7 @@ var server = http.createServer(function(req, res)
 				case '':
 					
 					// try to fetch the tile
-					return fetchTile(map, z, x, y, function(png, meta)
+					return fetchTile(map, z, x, y, function(png)
 					{
 						// no tile found
 						if(!png)
@@ -497,7 +489,7 @@ var server = http.createServer(function(req, res)
 									stats.maps[map].zooms[z].tiles_delivered++;
 									
 									// tile rendered, send it to client
-									res.endTile(png, meta, map, z, x, y);
+									res.endTile(png, map, z, x, y);
 									
 									// print the request to the log
 									return req.log('tile from tirex');
@@ -510,7 +502,7 @@ var server = http.createServer(function(req, res)
 						stats.maps[map].zooms[z].tiles_delivered++;
 						
 						// tile found, send it to client
-						res.endTile(png, meta, map, z, x, y);
+						res.endTile(png, map, z, x, y);
 						
 						// print the request to the log
 						return req.log('tile from cache');
@@ -859,34 +851,48 @@ function fetchTile(map, z, x, y, cb)
 		return;
 	}
 	
-	// fetch stats from the metafile
-	return fs.stat(metafile, function(err, meta) 
+	// try to open the file
+	return fs.open(metafile, 'r', null, function(err, fd)
 	{
-		// error fetching stats
+		// error opening the file, call back without result
 		if(err)
 		{
 			if(cb) cb();
 			return;
 		}
 		
-		// try to open the file
-		return fs.open(metafile, 'r', null, function(err, fd)
+		// create a buffer fo the metatile header
+		var buffer = new Buffer(metatile_header_size);
+		
+		// try to read the metatile header from disk
+		return fs.read(fd, buffer, 0, metatile_header_size, 0, function(err, bytesRead)
 		{
-			// error opening the file, call back without result
-			if(err)
+			// the metatile header could not be read, call back without result
+			if (err || bytesRead !== metatile_header_size)
 			{
+				// close file descriptor
+				fs.close(fs);
+				
+				// call back without result
 				if(cb) cb();
 				return;
 			}
 			
-			// create a buffer fo the metatile header
-			var buffer = new Buffer(metatile_header_size);
+			// offset into lookup table in header
+			var pib = 20 + ((y%8) * 8) + ((x%8) * 64);
 			
-			// try to read the metatile header from disk
-			return fs.read(fd, buffer, 0, metatile_header_size, 0, function(err, bytesRead)
+			// read file offset and size of the real tile from the header
+			var offset = buffer.getLong(pib);
+			var size   = buffer.getLong(pib+4);
+			
+			// create a buffer for the png data
+			var png = new Buffer(size);
+			
+			// read the png from disk
+			return fs.read(fd, png, 0, size, offset, function(err, bytesRead)
 			{
-				// the metatile header could not be read, call back without result
-				if (err || bytesRead !== metatile_header_size)
+				// the png could not be read
+				if (err || bytesRead !== size)
 				{
 					// close file descriptor
 					fs.close(fs);
@@ -896,37 +902,12 @@ function fetchTile(map, z, x, y, cb)
 					return;
 				}
 				
-				// offset into lookup table in header
-				var pib = 20 + ((y%8) * 8) + ((x%8) * 64);
+				// close file descriptor
+				fs.close(fd);
 				
-				// read file offset and size of the real tile from the header
-				var offset = buffer.getLong(pib);
-				var size   = buffer.getLong(pib+4);
-				
-				// create a buffer for the png data
-				var png = new Buffer(size);
-				
-				// read the png from disk
-				return fs.read(fd, png, 0, size, offset, function(err, bytesRead)
-				{
-					// the png could not be read
-					if (err || bytesRead !== size)
-					{
-						// close file descriptor
-						fs.close(fs);
-						
-						// call back without result
-						if(cb) cb();
-						return;
-					}
-					
-					// close file descriptor
-					fs.close(fd);
-					
-					// call back with png
-					if(cb) cb(png, meta);
-					return;
-				});
+				// call back with png
+				if(cb) cb(png);
+				return;
 			});
 		});
 	});
