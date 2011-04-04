@@ -27,7 +27,8 @@
 
 /*
  TODO
-   - ip-limits (tiles)
+   - ip-limits (throtteling of tile delivery)
+   - divide /dirty from /render call
 */
 
 // basic configuration
