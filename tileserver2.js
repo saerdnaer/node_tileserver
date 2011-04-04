@@ -593,7 +593,7 @@ if(config.dirtyRef) fs.stat(config.dirtyRef, function(err, stats)
 	}
 	
 	// safe the references change time as reference
-	config.dirtyRefTime = stats.ctime;
+	config.dirtyRefTime = stats.mtime;
 	console.log('tiles older then %s will be sent to tirex as dirty', config.dirtyRefTime.toGMTString());
 });
 
@@ -892,14 +892,14 @@ function dirtyTile(map, z, x, y, cb)
 		return cb({status: 'unknown'});
 	
 	// check if the file exists
-	fs.stats(metatile, function(err, stats)
+	return fs.stat(metafile, function(err, stats)
 	{
 		// not found
 		if(err)
 			return cb({status: 'not yet rendered'});
 		
 		// alter the fs-times
-		fs.utimes(metafile, config.dirtyRefTime, config.dirtyRefTime, function()
+		return fs.utimes(metafile, config.dirtyRefTime, config.dirtyRefTime, function()
 		{
 			// and return the callback
 			return cb({status: 'dirty'});
