@@ -28,7 +28,6 @@
 /*
  TODO
    - ip-limits (throtteling of tile delivery)
-   - divide /dirty from /render call
 */
 
 // basic configuration
@@ -417,8 +416,21 @@ var server = http.createServer(function(req, res)
 			// switch by action field
 			switch(path[6] || '')
 			{
-				// dirty
+				// render
 				case 'dirty':
+					
+					// try to dirty the tile
+					return dirtyTile(map, z, x, y, function(result)
+					{
+						// send response
+						res.endJson(result);
+						
+						// print the request to the log
+						return req.log('dirty');
+					});
+					
+				// render
+				case 'render':
 					
 					// count a render-request
 					stats.maps[map].zooms[z].tiles_rendered++;
@@ -444,14 +456,14 @@ var server = http.createServer(function(req, res)
 					stats.meta_delivered++;
 					
 					// fetch the status of the log, call back when finished
-					fetchTileStatus(map, z, x, y, function(status)
+					return fetchTileStatus(map, z, x, y, function(status)
 					{
 						// send the status to the client
-						return res.endJson(status);
+						res.endJson(status);
+						
+						// print the request to the log
+						return req.log('status');
 					});
-					
-					// print the request to the log
-					return req.log('status');
 				
 				
 				
@@ -858,6 +870,41 @@ master.on('message', function(buf, rinfo)
 		cb(msg.result == 'ok');
 	}
 });
+
+function dirtyTile(map, z, x, y, cb)
+{
+	// convert z/x/y to a metafile-path
+	var metafile = zxy_to_metafile(map, z, x, y);
+	
+	// if the path could not be constructed
+	if(!metafile)
+	{
+		// return without response
+		return cb();
+	}
+	
+	// if this node version does not have a utimes call
+	if(!fs.utimes)
+		return cb({status: 'no-utimes-call'});
+	
+	if(!config.dirtyRefTime)
+		return cb({status: 'unknown'});
+	
+	// check if the file exists
+	fs.stats(metatile, function(err, stats)
+	{
+		// not found
+		if(err)
+			return cb({status: 'not yet rendered'});
+		
+		// alter the fs-times
+		fs.utimes(metafile, config.dirtyRefTime, config.dirtyRefTime, function()
+		{
+			// and return the callback
+			return cb({status: 'dirty'});
+		});
+	});
+}
 
 // fetch the tile status
 //  cb(status)
