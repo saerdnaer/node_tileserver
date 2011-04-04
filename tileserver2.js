@@ -29,7 +29,6 @@
  TODO
    - status-call
    - ip-limits (tiles)
-   - dirty check & dirty timeout
 */
 
 // basic configuration
@@ -84,6 +83,9 @@ var config =
 	
 	// cache time for static files (28 days)
 	cacheStatic: 2419200, 
+	
+	// reference-file for dirty tiles
+	dirtyRef: '/var/lib/tirex/tiles/dirtyRef', 
 	
 	// this will be filled from the tirex config
 	maps: {}
@@ -564,6 +566,21 @@ config.maps = readConfig(config.configdir);
 // initiate the per-map- and per-zoom-statistics
 stats.initMaps();
 
+// read the reference-time
+if(config.dirtyRef) fs.stat(config.dirtyRef, function(err, stats)
+{
+	// an error -> no ref time available
+	if(err)
+	{
+		// warn the admin
+		return console.warn('could not detect dirty reference time from %s', config.dirtyRef);
+	}
+	
+	// safe the references change time as reference
+	config.dirtyRefTime = stats.ctime;
+	console.log('tiles older then %s will be sent to tirex as dirty', config.dirtyRefTime.toGMTString());
+});
+
 // parse the config
 //  all fs-ops are synchronous for simplicity, 
 //  concurrency does not matter in this stage
@@ -858,63 +875,81 @@ function fetchTile(map, z, x, y, cb)
 		return;
 	}
 	
-	// try to open the file
-	return fs.open(metafile, 'r', null, function(err, fd)
+	// try to fetch tile stats
+	return fs.stat(metafile, function(err, stats)
 	{
-		// error opening the file, call back without result
+		// error stat'ing the file, call back without result
 		if(err)
 		{
 			if(cb) cb();
 			return;
 		}
 		
-		// create a buffer fo the metatile header
-		var buffer = new Buffer(metatile_header_size);
-		
-		// try to read the metatile header from disk
-		return fs.read(fd, buffer, 0, metatile_header_size, 0, function(err, bytesRead)
+		// if a dirty time is configured and the tile is older
+		if(config.dirtyRefTime && config.dirtyRefTime > stats.mtime)
 		{
-			// the metatile header could not be read, call back without result
-			if (err || bytesRead !== metatile_header_size)
+			// send the tile to tirex
+			sendToTirex(map, z, x, y);
+		}
+		
+		// try to open the file
+		return fs.open(metafile, 'r', null, function(err, fd)
+		{
+			// error opening the file, call back without result
+			if(err)
 			{
-				// close file descriptor
-				fs.close(fs);
-				
-				// call back without result
 				if(cb) cb();
 				return;
 			}
 			
-			// offset into lookup table in header
-			var pib = 20 + ((y%8) * 8) + ((x%8) * 64);
-			
-			// read file offset and size of the real tile from the header
-			var offset = buffer.getLong(pib);
-			var size   = buffer.getLong(pib+4);
-			
-			// create a buffer for the png data
-			var png = new Buffer(size);
-			
-			// read the png from disk
-			return fs.read(fd, png, 0, size, offset, function(err, bytesRead)
+			// create a buffer fo the metatile header
+			var buffer = new Buffer(metatile_header_size);
+		
+			// try to read the metatile header from disk
+			return fs.read(fd, buffer, 0, metatile_header_size, 0, function(err, bytesRead)
 			{
-				// the png could not be read
-				if (err || bytesRead !== size)
+				// the metatile header could not be read, call back without result
+				if (err || bytesRead !== metatile_header_size)
 				{
 					// close file descriptor
 					fs.close(fs);
-					
+				
 					// call back without result
 					if(cb) cb();
 					return;
 				}
+			
+				// offset into lookup table in header
+				var pib = 20 + ((y%8) * 8) + ((x%8) * 64);
+			
+				// read file offset and size of the real tile from the header
+				var offset = buffer.getLong(pib);
+				var size   = buffer.getLong(pib+4);
+			
+				// create a buffer for the png data
+				var png = new Buffer(size);
+			
+				// read the png from disk
+				return fs.read(fd, png, 0, size, offset, function(err, bytesRead)
+				{
+					// the png could not be read
+					if (err || bytesRead !== size)
+					{
+						// close file descriptor
+						fs.close(fs);
+					
+						// call back without result
+						if(cb) cb();
+						return;
+					}
 				
-				// close file descriptor
-				fs.close(fd);
+					// close file descriptor
+					fs.close(fd);
 				
-				// call back with png
-				if(cb) cb(png);
-				return;
+					// call back with png
+					if(cb) cb(png);
+					return;
+				});
 			});
 		});
 	});
