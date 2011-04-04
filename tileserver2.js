@@ -28,6 +28,7 @@
 /*
  TODO
    - ip-limits (throtteling of tile delivery)
+   - gz compression for static calls
 */
 
 // basic configuration
@@ -938,7 +939,8 @@ function fetchTileStatus(map, z, x, y, cb)
 			return cb({
 				'status': config.dirtyRefTime >= stats.mtime ? 'dirty' : 'clean', 
 				'refTime': config.dirtyRefTime, 
-				'lastRendered': stats.mtime
+				'lastRendered': stats.mtime, 
+				'metafile': metafile
 			});
 		}
 		
@@ -948,7 +950,8 @@ function fetchTileStatus(map, z, x, y, cb)
 			// the tile is neither clean nor dirty
 			return cb({
 				'status': 'unknown', 
-				'lastRendered': stats.mtime
+				'lastRendered': stats.mtime, 
+				'metafile': metafile
 			});
 		}
 	});
