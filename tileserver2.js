@@ -27,7 +27,6 @@
 
 /*
  TODO
-   - status-call
    - ip-limits (tiles)
 */
 
@@ -424,10 +423,13 @@ var server = http.createServer(function(req, res)
 					stats.maps[map].zooms[z].tiles_rendered++;
 					
 					// send the request to tirex, don't call back when finished
-					sendToTirex(map, z, x, y);
+					var reqid = sendToTirex(map, z, x, y);
 					
 					// send response to the client
-					res.endJson('submitted to tirex');
+					res.endJson({
+						'status': 'sent to tirex', 
+						'reqid': reqid
+					});
 					
 					// print the request to the log
 					return req.log('dirty');
@@ -823,6 +825,9 @@ function sendToTirex(map, z, x, y, cb)
 		// call back with negative result
 		cb(false);
 	}, config.timeout);
+	
+	// return the reqid
+	return reqid;
 }
 
 // when a message arrives from tirex
@@ -854,11 +859,51 @@ master.on('message', function(buf, rinfo)
 });
 
 // fetch the tile status
-//  if(cb) cb(status)
+//  cb(status)
 function fetchTileStatus(map, z, x, y, cb)
 {
-	console.log('fetchTileStatus');
-	cb(false);
+	// convert z/x/y to a metafile-path
+	var metafile = zxy_to_metafile(map, z, x, y);
+	
+	// if the path could not be constructed
+	if(!metafile)
+	{
+		// return without response
+		return cb();
+	}
+	
+	// fetch the stats
+	return fs.stat(metafile, function(err, stats)
+	{
+		// callback
+		if(err)
+		{
+			return cb({
+				'status': 'not found'
+			});
+		}
+		
+		// if this server has a dirty-reference time
+		if(config.dirtyRefTime)
+		{
+			// return if the tile is clean
+			return cb({
+				'status': config.dirtyRefTime >= stats.mtime ? 'dirty' : 'clean', 
+				'refTime': config.dirtyRefTime, 
+				'lastRendered': stats.mtime
+			});
+		}
+		
+		// without a referenct time
+		else
+		{
+			// the tile is neither clean nor dirty
+			return cb({
+				'status': 'unknown', 
+				'lastRendered': stats.mtime
+			});
+		}
+	});
 }
 
 // fetch the tile
@@ -886,7 +931,7 @@ function fetchTile(map, z, x, y, cb)
 		}
 		
 		// if a dirty time is configured and the tile is older
-		if(config.dirtyRefTime && config.dirtyRefTime > stats.mtime)
+		if(config.dirtyRefTime && config.dirtyRefTime >= stats.mtime)
 		{
 			// send the tile to tirex
 			sendToTirex(map, z, x, y);
