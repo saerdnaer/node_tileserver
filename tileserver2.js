@@ -263,7 +263,7 @@ http.ServerResponse.prototype.endError = function(code, desc, headers)
 }
 
 // end with a tile
-http.ServerResponse.prototype.endTile = function(png, map, z, x, y)
+http.ServerResponse.prototype.endTile = function(png, map, z, x, y, level)
 {
 	// iterate over all cache settings
 	for(var i=0; i<config.cache.length; i++)
@@ -297,6 +297,7 @@ http.ServerResponse.prototype.endTile = function(png, map, z, x, y)
 		
 		'X-Map': map, 
 		'X-Coord': z+'/'+x+'/'+y, 
+		'X-Level': level, 
 		'X-License': 'Map data (c) OpenStreetMap contributors, CC-BY-SA'
 	});
 	
@@ -380,11 +381,20 @@ var server = http.createServer(function(req, res)
 				return req.log(404, 'wrong tile path');
 			}
 			
+			var filename = path[5].split('.');
+
 			// split call
 			var map = path[2],  
 				z = parseInt(path[3]), 
 				x = parseInt(path[4]), 
-				y = parseInt(path[5]);
+				y = parseInt(filename[0]);
+				
+			
+			var level = filename[1];
+			if ( level == "png" ) {
+				level = "";
+			}
+			
 			
 			// check if the map-name is known
 			if(!config.maps[map])
@@ -421,7 +431,7 @@ var server = http.createServer(function(req, res)
 				case 'dirty':
 					
 					// try to dirty the tile
-					return dirtyTile(map, z, x, y, function(result)
+					return dirtyTile(map, z, x, y, level, function(result)
 					{
 						// send response
 						res.endJson(result);
@@ -437,7 +447,7 @@ var server = http.createServer(function(req, res)
 					stats.maps[map].zooms[z].tiles_rendered++;
 					
 					// send the request to tirex, don't call back when finished
-					var reqid = sendToTirex(map, z, x, y);
+					var reqid = sendToTirex(map, z, x, y, level);
 					
 					// send response to the client
 					res.endJson({
@@ -457,7 +467,7 @@ var server = http.createServer(function(req, res)
 					stats.meta_delivered++;
 					
 					// fetch the status of the log, call back when finished
-					return fetchTileStatus(map, z, x, y, function(status)
+					return fetchTileStatus(map, z, x, y, level, function(status)
 					{
 						// send the status to the client
 						res.endJson(status);
@@ -472,7 +482,7 @@ var server = http.createServer(function(req, res)
 				case '':
 					
 					// try to fetch the tile
-					return fetchTile(map, z, x, y, function(png)
+					return fetchTile(map, z, x, y, level, function(png)
 					{
 						// no tile found
 						if(!png)
@@ -481,7 +491,7 @@ var server = http.createServer(function(req, res)
 							stats.maps[map].zooms[z].tiles_rendered++;
 							
 							// send the request to tirex
-							return sendToTirex(map, z, x, y, function(success)
+							return sendToTirex(map, z, x, y, level, function(success)
 							{
 								// if the rendering did not complete
 								if(!success)
@@ -494,7 +504,7 @@ var server = http.createServer(function(req, res)
 								}
 								
 								// tile rendered, re-read it from disk
-								return fetchTile(map, z, x, y, function(png, meta)
+								return fetchTile(map, z, x, y, level, function(png, meta)
 								{
 									// if the rendering did not complete
 									if(!png)
@@ -510,7 +520,7 @@ var server = http.createServer(function(req, res)
 									stats.maps[map].zooms[z].tiles_delivered++;
 									
 									// tile rendered, send it to client
-									res.endTile(png, map, z, x, y);
+									res.endTile(png, map, z, x, y, level);
 									
 									// print the request to the log
 									return req.log('tile from tirex');
@@ -523,7 +533,7 @@ var server = http.createServer(function(req, res)
 						stats.maps[map].zooms[z].tiles_delivered++;
 						
 						// tile found, send it to client
-						res.endTile(png, map, z, x, y);
+						res.endTile(png, map, z, x, y, level);
 						
 						// print the request to the log
 						return req.log('tile from cache');
@@ -779,7 +789,7 @@ function handleStatic(req, res, cb)
 
 // send to tirex and call back when the tile got rendered
 //  if(cb) cb(success)
-function sendToTirex(map, z, x, y, cb)
+function sendToTirex(map, z, x, y, level, cb)
 {
 	// reduce the coordinates to metatile coordinates
 	var mx = x - x%8;
@@ -812,7 +822,9 @@ function sendToTirex(map, z, x, y, cb)
 		// tile coordinates
 		x:    mx,
 		y:    my,
-		z:    z
+		z:    z,
+		
+		level: level
 	};
 	
 	// log the tirex-send to the console
@@ -872,10 +884,10 @@ master.on('message', function(buf, rinfo)
 	}
 });
 
-function dirtyTile(map, z, x, y, cb)
+function dirtyTile(map, z, x, y, level, cb)
 {
 	// convert z/x/y to a metafile-path
-	var metafile = zxy_to_metafile(map, z, x, y);
+	var metafile = zxy_to_metafile(map, z, x, y, level);
 	
 	// if the path could not be constructed
 	if(!metafile)
@@ -909,10 +921,10 @@ function dirtyTile(map, z, x, y, cb)
 
 // fetch the tile status
 //  cb(status)
-function fetchTileStatus(map, z, x, y, cb)
+function fetchTileStatus(map, z, x, y, level, cb)
 {
 	// convert z/x/y to a metafile-path
-	var metafile = zxy_to_metafile(map, z, x, y);
+	var metafile = zxy_to_metafile(map, z, x, y, level);
 	
 	// if the path could not be constructed
 	if(!metafile)
@@ -959,10 +971,11 @@ function fetchTileStatus(map, z, x, y, cb)
 
 // fetch the tile
 //  if(cb) cb(buffer)
-function fetchTile(map, z, x, y, cb)
+function fetchTile(map, z, x, y, level, cb)
 {
 	// convert z/x/y to a metafile-path
-	var metafile = zxy_to_metafile(map, z, x, y);
+	var metafile = zxy_to_metafile(map, z, x, y, level);
+	console.log(metafile);
 	
 	// if the file did not exists
 	if(!metafile)
@@ -985,7 +998,7 @@ function fetchTile(map, z, x, y, cb)
 		if(config.dirtyRefTime && config.dirtyRefTime >= stats.mtime)
 		{
 			// send the tile to tirex
-			sendToTirex(map, z, x, y);
+			sendToTirex(map, z, x, y, level);
 		}
 		
 		// try to open the file
@@ -1052,7 +1065,7 @@ function fetchTile(map, z, x, y, cb)
 }
 
 // convert map, z, x, y to a metafile
-function zxy_to_metafile(map, z, x, y)
+function zxy_to_metafile(map, z, x, y, level)
 {
 	// reduce tile-coords to metatile-coords
 	var mx = x - x%8;
@@ -1080,7 +1093,7 @@ function zxy_to_metafile(map, z, x, y)
 	// now join the tiledir and the calculated path
 	return path.join(
 		config.maps[map].tiledir, 
-		path_components.join('/') + '.meta'
+		path_components.join('/') + ( level != '' ? '.'+level : '' ) + '.meta'
 	);
 }
 
